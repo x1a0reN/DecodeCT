@@ -1,0 +1,12 @@
+# Ignore CE Source code
+cheat-engine-master/
+
+# Ignore Python specific
+__pycache__/
+*.pyc
+
+# Ignore runtime output files
+*.luac
+*.lua
+unluac*.jar
+demo.txt
