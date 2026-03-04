@@ -163,6 +163,14 @@ if __name__ == "__main__":
                 # or in loadstring. Writing it out inline handles most cases gracefully.
                 replacement = f"function()\n{decompiled_src}\nend"
                 
+                # Encode XML special entities so it doesn't break Cheat Engine's XML parser
+                from xml.sax.saxutils import escape
+                # Only escape <, >, and & (mostly < and & break XML parsers here)
+                replacement = escape(replacement, entities={
+                    "'": "&apos;",
+                    "\"": "&quot;"
+                })
+                
                 # Replace in the full text
                 new_content = new_content.replace(full_match_str, replacement)
             else:
