@@ -68,8 +68,61 @@ def decrypt_ce_function(b85_str):
 
 def extract_encoded_strings(text):
     """Extracts strings that look like decodeFunction('...') arguments."""
+    import re
     matches = re.finditer(r"decodeFunction\(['\"](.*?)['\"]\)", text, re.DOTALL)
     return [m.group(1) for m in matches]
+
+import os
+import subprocess
+import glob
+
+def decompile_luac(bytecode_path):
+    """Runs unluac on the given bytecode file and returns the decompiled source as a string."""
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    
+    # Check common locations for the unluac jar
+    unluac_jar = None
+    possible_paths = [
+        os.path.join(script_dir, "unluac.jar"),
+        os.path.join(script_dir, "unluac_2025_12_23.jar"),
+        os.path.join(script_dir, "unluac", "unluac.jar")
+    ]
+    
+    for p in possible_paths:
+        if os.path.exists(p):
+            unluac_jar = p
+            break
+            
+    if not unluac_jar:
+        # Fallback to recursively scanning for any unluac*.jar
+        for root, dirs, files in os.walk(script_dir):
+            for file in files:
+                if file.startswith("unluac") and file.endswith(".jar"):
+                    unluac_jar = os.path.join(root, file)
+                    break
+            if unluac_jar:
+                break
+                
+    if not unluac_jar:
+        print(f"DEBUG: Could not find any jar starting with unluac in {script_dir}")
+        return None
+        
+    try:
+        # Run java -jar unluac.jar <file>
+        result = subprocess.run(
+            ["java", "-jar", unluac_jar, bytecode_path],
+            capture_output=True,
+            text=True,
+            check=True
+        )
+        return result.stdout
+    except subprocess.CalledProcessError as e:
+        print(f"Decompilation failed with code {e.returncode}: {e}")
+        print(f"Stderr: {e.stderr}")
+        return None
+    except Exception as e:
+        print(f"Unexpected error calling java: {e}")
+        return None
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
@@ -80,19 +133,54 @@ if __name__ == "__main__":
     with open(filename, 'r', encoding='utf-8', errors='ignore') as f:
         content = f.read()
         
-    encoded_strings = extract_encoded_strings(content)
-    print(f"Found {len(encoded_strings)} encoded functions in {filename}")
+    # Find all matches, saving the full match string and the matched inner base85
+    matches = list(re.finditer(r"decodeFunction\(['\"](.*?)['\"]\)", content, re.DOTALL))
+    print(f"Found {len(matches)} encoded functions in {filename}")
     
-    for i, b85_str in enumerate(encoded_strings):
-        print(f"\n--- Decoding function #{i+1} ---")
+    new_content = content
+    
+    for i, match in enumerate(matches):
+        full_match_str = match.group(0)
+        b85_str = match.group(1)
+        
+        print(f"\n--- Processing function #{i+1} ---")
         bytecode = decrypt_ce_function(b85_str)
-        if bytecode:
-            out_file = f"decoded_function_{i+1}.luac"
+        if bytecode and bytecode.startswith(b'\x1bLua'):
+            out_file = f"temp_function_{i+1}.luac"
             with open(out_file, 'wb') as out:
                 out.write(bytecode)
-            print(f"Successfully decoded! Saved Lua bytecode to {out_file}")
-            # Optional: print first few bytes to verify it's lua bytecode
-            hex_view = " ".join([f"{b:02X}" for b in bytecode[:16]])
-            print(f"Header preview: {hex_view}")
-            if bytecode.startswith(b'\x1bLua'):
-                print("Valid Lua bytecode signature detected!")
+            
+            # Decompile it automatically
+            decompiled_src = decompile_luac(out_file)
+            
+            if decompiled_src:
+                print("Successfully decompiled!")
+                
+                # Format exactly as a block for the CT file to parse properly
+                # We wrap it in a function() ... end block since decodeFunction returns a function
+                
+                # Many CE scripts use decodeFunction(...) directly assigned to a callback
+                # or in loadstring. Writing it out inline handles most cases gracefully.
+                replacement = f"function()\n{decompiled_src}\nend"
+                
+                # Replace in the full text
+                new_content = new_content.replace(full_match_str, replacement)
+            else:
+                print("Could not decompile (is unluac.jar present and Java installed?). Skipping replacement.")
+                
+            # Clean up temp bytecode
+            try:
+                os.remove(out_file)
+            except OSError:
+                pass
+        else:
+            print("Failed to decode or invalid Lua signature.")
+
+    # Save the patched result
+    base, ext = os.path.splitext(filename)
+    output_filename = f"{base}_decrypted{ext}"
+    
+    with open(output_filename, 'w', encoding='utf-8') as f:
+        f.write(new_content)
+        
+    print(f"\nDone! Saved decrypted script/CT to: {output_filename}")
